@@ -6,16 +6,15 @@ app = FastAPI(title="B2B Governo API")
 
 # ==================== CORS ====================
 app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "https://*.riker.replit.dev",  # aceita qualquer subdomínio riker
-        "https://*.replit.dev",
-        "http://localhost",
-        "http://localhost:3000",
-        "http://localhost:5000",
+   CORSMiddleware,
+   allow_origins=[
+        "https://flutter-energy-consumption.vercel.app",   # ← Seu app no Vercel
+        "http://localhost:3000",                          # Para desenvolvimento web
+        "http://localhost:8080",                          # Caso use outro porto
+        "http://127.0.0.1:3000",
     ],
-    allow_origin_regex=r"https://.*\.replit\.dev",
-    allow_credentials=False,
+    allow_origin_regex=r"https://.*\.vercel\.app$",       # Aceita qualquer subdomínio do Vercel
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )

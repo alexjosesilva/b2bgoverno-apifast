@@ -1,203 +1,141 @@
-from __future__ import annotations
-# testes de commit 
-from io import StringIO
-from typing import Dict, List
-
-import httpx
-import pandas as pd
-from fastapi import FastAPI, HTTPException, Query
+from typing import List, Dict
+from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="B2B Governo API", version="1.0.0")
+app = FastAPI(title="B2B Governo API")
 
+# ==================== CORS ====================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=[
+        "https://*.riker.replit.dev",  # aceita qualquer subdomínio riker
+        "https://*.replit.dev",
+        "http://localhost",
+        "http://localhost:3000",
+        "http://localhost:5000",
+    ],
+    allow_origin_regex=r"https://.*\.replit\.dev",
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-ANEEL_CSV_URL = (
-    "https://dadosabertos.aneel.gov.br/dataset/"
-    "d5f0712e-62f6-4736-8dff-9991f10758a7/resource/"
-    "4493985c-baea-429c-9df5-3030422c71d7/download/"
-    "indicadores-continuidade-coletivos-2020-2029.csv"
-)
-
-IBGE_ESTADOS_URL = "https://servicodados.ibge.gov.br/api/v1/localidades/estados"
-
-# Mapeamento por distribuidora/Uf.
-# Você pode evoluir isso depois para usar uma tabela própria ou base relacional.
-SIG_AGENTE_TO_UF: Dict[str, str] = {
-    "EQUATORIAL AL": "AL",
-    "NEOENERGIA PE": "PE",
-    "NEOENERGIA COELBA": "BA",
-    "NEOENERGIA COSERN": "RN",
-    "NEOENERGIA ELEKTRO": "SP",
-    "ENEL CE": "CE",
-    "ENEL RJ": "RJ",
-    "ENEL SP": "SP",
-    "CPFL PAULISTA": "SP",
-    "CPFL PIRATININGA": "SP",
-    "RGE": "RS",
-    "CEEE-D": "RS",
-    "EQUATORIAL MA": "MA",
-    "EQUATORIAL PA": "PA",
-    "EQUATORIAL PI": "PI",
-    "EQUATORIAL GO": "GO",
-    "LIGHT": "RJ",
-    "CEMIG-D": "MG",
-    "COPEL-DIS": "PR",
-    "CELESC-DIS": "SC",
-    "ENERGISA PB": "PB",
-    "ENERGISA SE": "SE",
-    "ENERGISA TO": "TO",
-    "ENERGISA MT": "MT",
-    "ENERGISA MS": "MS",
-    "ENERGISA MG": "MG",
-    "ENERGISA RO": "RO",
-    "ENERGISA BO": "RO",
-    "EQUATORIAL AP": "AP",
-    "AMAZONAS ENERGIA": "AM",
-    "RORAIMA ENERGIA": "RR",
-    "SULGIPE": "SE",
-}
-
-_ibge_cache: Dict[str, str] | None = None
-_aneel_cache_df: pd.DataFrame | None = None
+# Seus dados fixos...
+DADOS_FIXOS = [
+    {"regiao": "Norte", "valor": 0.91},
+    {"regiao": "Nordeste", "valor": 1.18},
+    {"regiao": "Centro-Oeste", "valor": 1.17},
+    {"regiao": "Sudeste", "valor": 2.05},
+    {"regiao": "Sul", "valor": 1.83},
+]
 
 
-async def carregar_uf_para_regiao() -> Dict[str, str]:
-    global _ibge_cache
-
-    if _ibge_cache is not None:
-      return _ibge_cache
-
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.get(IBGE_ESTADOS_URL)
-        response.raise_for_status()
-        data = response.json()
-
-    uf_para_regiao: Dict[str, str] = {}
-    for item in data:
-        sigla = item.get("sigla")
-        regiao = item.get("regiao", {}).get("nome")
-        if sigla and regiao:
-            uf_para_regiao[sigla] = regiao
-
-    _ibge_cache = uf_para_regiao
-    return uf_para_regiao
-
-
-async def carregar_csv_aneel() -> pd.DataFrame:
-    global _aneel_cache_df
-
-    if _aneel_cache_df is not None:
-        return _aneel_cache_df.copy()
-
-    async with httpx.AsyncClient(timeout=180.0) as client:
-        response = await client.get(ANEEL_CSV_URL)
-        response.raise_for_status()
-        csv_text = response.text
-
-    df = pd.read_csv(
-        StringIO(csv_text),
-        sep=";",
-        dtype=str,
-        low_memory=False,
-    )
-
-    # Normalização básica
-    expected_cols = {
-        "SigAgente",
-        "SigIndicador",
-        "AnoIndice",
-        "NumPeriodoIndice",
-        "VlrIndiceEnviado",
-    }
-    missing = expected_cols - set(df.columns)
-    if missing:
-        raise HTTPException(
-            status_code=500,
-            detail=f"CSV da ANEEL sem colunas esperadas: {sorted(missing)}",
-        )
-
-    df["SigAgente"] = df["SigAgente"].fillna("").str.strip().str.upper()
-    df["SigIndicador"] = df["SigIndicador"].fillna("").str.strip().str.upper()
-    df["AnoIndice"] = pd.to_numeric(df["AnoIndice"], errors="coerce")
-    df["NumPeriodoIndice"] = pd.to_numeric(df["NumPeriodoIndice"], errors="coerce")
-
-    # Troca decimal brasileira por ponto
-    df["VlrIndiceEnviado"] = (
-        df["VlrIndiceEnviado"]
-        .fillna("0")
-        .astype(str)
-        .str.replace(".", "", regex=False)
-        .str.replace(",", ".", regex=False)
-    )
-    df["VlrIndiceEnviado"] = pd.to_numeric(df["VlrIndiceEnviado"], errors="coerce").fillna(0.0)
-
-    _aneel_cache_df = df.copy()
-    return df
-
-
-def agente_para_uf(sig_agente: str) -> str | None:
-    return SIG_AGENTE_TO_UF.get(sig_agente.strip().upper())
+# Suas rotas...
+@app.get("/")
+def root():
+    return {"status": "ok", "msg": "API B2B Governo rodando"}
 
 
 @app.get("/health")
-async def health():
+def health():
     return {"status": "ok"}
 
 
 @app.get("/api/consumo/regioes")
-async def consumo_regioes(
-    ano: int = Query(..., ge=2020, le=2030),
+def consumo_regioes(
+    ano: int = Query(2026),
     indicador: str = Query("DEC"),
-    periodo: int | None = Query(None, ge=1, le=12),
-) -> List[Dict[str, float | str]]:
-    indicador = indicador.strip().upper()
+) -> List[Dict]:
+    return DADOS_FIXOS
 
-    if indicador not in {"DEC", "FEC"}:
+
+dados_por_regiao = {
+    "Norte": [
+        {"mes": "Jan", "demanda": 90},
+        {"mes": "Fev", "demanda": 95},
+        {"mes": "Mar", "demanda": 100},
+        {"mes": "Abr", "demanda": 98},
+        {"mes": "Mai", "demanda": 102},
+        {"mes": "Jun", "demanda": 110},
+        {"mes": "Jul", "demanda": 115},
+        {"mes": "Ago", "demanda": 118},
+        {"mes": "Set", "demanda": 120},
+        {"mes": "Out", "demanda": 125},
+        {"mes": "Nov", "demanda": 130},
+        {"mes": "Dez", "demanda": 135},
+    ],
+    "Nordeste": [
+        {"mes": "Jan", "demanda": 120},
+        {"mes": "Fev", "demanda": 126},
+        {"mes": "Mar", "demanda": 131},
+        {"mes": "Abr", "demanda": 128},
+        {"mes": "Mai", "demanda": 134},
+        {"mes": "Jun", "demanda": 140},
+        {"mes": "Jul", "demanda": 145},
+        {"mes": "Ago", "demanda": 149},
+        {"mes": "Set", "demanda": 153},
+        {"mes": "Out", "demanda": 158},
+        {"mes": "Nov", "demanda": 162},
+        {"mes": "Dez", "demanda": 168},
+    ],
+    "Sudeste": [
+        {"mes": "Jan", "demanda": 200},
+        {"mes": "Fev", "demanda": 210},
+        {"mes": "Mar", "demanda": 220},
+        {"mes": "Abr", "demanda": 215},
+        {"mes": "Mai", "demanda": 225},
+        {"mes": "Jun", "demanda": 240},
+        {"mes": "Jul", "demanda": 250},
+        {"mes": "Ago", "demanda": 260},
+        {"mes": "Set", "demanda": 270},
+        {"mes": "Out", "demanda": 280},
+        {"mes": "Nov", "demanda": 290},
+        {"mes": "Dez", "demanda": 300},
+    ],
+    "Sul": [
+        {"mes": "Jan", "demanda": 150},
+        {"mes": "Fev", "demanda": 155},
+        {"mes": "Mar", "demanda": 160},
+        {"mes": "Abr", "demanda": 158},
+        {"mes": "Mai", "demanda": 165},
+        {"mes": "Jun", "demanda": 170},
+        {"mes": "Jul", "demanda": 175},
+        {"mes": "Ago", "demanda": 180},
+        {"mes": "Set", "demanda": 185},
+        {"mes": "Out", "demanda": 190},
+        {"mes": "Nov", "demanda": 195},
+        {"mes": "Dez", "demanda": 200},
+    ],
+    "Centro-Oeste": [
+        {"mes": "Jan", "demanda": 110},
+        {"mes": "Fev", "demanda": 115},
+        {"mes": "Mar", "demanda": 120},
+        {"mes": "Abr", "demanda": 118},
+        {"mes": "Mai", "demanda": 125},
+        {"mes": "Jun", "demanda": 130},
+        {"mes": "Jul", "demanda": 135},
+        {"mes": "Ago", "demanda": 138},
+        {"mes": "Set", "demanda": 140},
+        {"mes": "Out", "demanda": 145},
+        {"mes": "Nov", "demanda": 150},
+        {"mes": "Dez", "demanda": 155},
+    ],
+}
+
+
+@app.get("/api/previsao/demanda")
+def previsao_demanda(
+    ano: int = Query(2026),
+    regiao: str = Query(...),
+) -> List[Dict]:
+    regiao = regiao.strip().title()  # Normaliza (ex: "sudeste" → "Sudeste")
+
+    if regiao not in dados_por_regiao:
         raise HTTPException(
             status_code=400,
-            detail="Indicador inválido. Use DEC ou FEC.",
+            detail={
+                "erro": "Região inválida",
+                "regioes_disponiveis": list(dados_por_regiao.keys()),
+            },
         )
-
-    uf_para_regiao = await carregar_uf_para_regiao()
-    df = await carregar_csv_aneel()
-
-    filtrado = df[
-        (df["AnoIndice"] == ano) &
-        (df["SigIndicador"] == indicador)
-    ].copy()
-
-    if periodo is not None:
-        filtrado = filtrado[filtrado["NumPeriodoIndice"] == periodo].copy()
-
-    if filtrado.empty:
-        return []
-
-    filtrado["UF"] = filtrado["SigAgente"].apply(agente_para_uf)
-    filtrado = filtrado[filtrado["UF"].notna()].copy()
-
-    filtrado["Regiao"] = filtrado["UF"].map(uf_para_regiao)
-    filtrado = filtrado[filtrado["Regiao"].notna()].copy()
-
-    if filtrado.empty:
-        return []
-
-    agregado = (
-        filtrado.groupby("Regiao", as_index=False)["VlrIndiceEnviado"]
-        .mean()
-        .sort_values("Regiao")
-    )
-
-    return [
-        {
-            "regiao": row["Regiao"],
-            "valor": round(float(row["VlrIndiceEnviado"]), 2),
-        }
-        for _, row in agregado.iterrows()
-    ]
+    return dados_por_regiao[regiao]
